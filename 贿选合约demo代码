@@ -1,0 +1,272 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity >=0.7.0 <0.9.0;
+
+contract Ballot {
+
+    //定义主席，可发起提案
+    address public chairperson;
+ 
+    //定义选民
+    struct Voter {
+        uint weight; // 计票的权重
+        uint[] voterHistory; //投票历史
+
+    }
+
+    // 定义提案
+    struct Proposal {
+        string name;   // 名称（最长32个字节）
+        string optopn1; //选项1
+        string optopn2; //选项2
+        uint option1VoteCount; //选项1得票数
+        uint option2VoteCount; //选项2得票数
+        address[] option1VoteAddress; //选项1投票人
+        address[] option2VoteAddress; //选项2投票人
+        uint[] option1VoteAddressWeight; //选项1投票人的投票权重数
+        uint[] option2VoteAddressWeight; //选项2投票人的投票权重数
+        bool voting;//投票状态
+        string winOption;//胜出选项
+        BriberyPool briberyPool;//提案对应的贿选池
+    }
+
+    //定义贿选池
+    struct BriberyPool {
+        uint option1Fund;//选项1资金池
+        uint option2Fund;//选项2资金池
+        address[] option1FundVoteAddress; //对选项1进行贿选者地址
+        address[] option2FundVoteAddress; //对选项2进行贿选者地址
+        uint[] option1FundVoteAddressTokenAmount;//对选项1进行贿选者的贿选金额
+        uint[] option2FundVoteAddressTokenAmount;//对选项2进行贿选者的贿选金额
+    }
+
+
+    // 为每个投票人地址存储一个Voter。
+    mapping(address => Voter) public voters;
+
+    // 一个 `Proposal` 结构类型的动态数组，存储产生的提案
+    Proposal[] public proposals;
+
+
+    //初始化提案
+    constructor(string[] memory proposalNames) public {
+        chairperson = msg.sender;
+        voters[chairperson].weight = 1;
+        address[] memory arrAdd = new address[](0);//定义地址空数组
+        uint[] memory arrUint = new uint[](0);//定义数值空数组
+
+        //初始化贿选池数据
+        BriberyPool memory bp = BriberyPool(0,0,arrAdd,arrAdd,arrUint,arrUint);
+
+        //初始化提案数据
+        for (uint i = 0; i < proposalNames.length; i++) {
+            proposals.push(Proposal({
+                name: proposalNames[i],
+                optopn1:"yes",
+                optopn2:"no",
+                option1VoteCount:0,
+                option2VoteCount:0,
+                option1VoteAddress:arrAdd,
+                option2VoteAddress:arrAdd,
+                option1VoteAddressWeight:arrUint,
+                option2VoteAddressWeight:arrUint,
+                voting:true,
+                winOption:'',
+                briberyPool:bp
+                
+            }));
+        }
+    }
+
+    // 主席对投票者赋予权重（真实产品权重根据持币量等来决定，这里只用于测试演示）
+    function giveRightToVote(address voter, uint weight) public {
+        require(//验证主席身份
+            msg.sender == chairperson,
+            "Only chairperson can give right to vote."
+        );
+        voters[voter].weight = weight;//赋予权重
+    }
+
+    function bribery (uint proposalIndex, string memory option) public payable{
+        //默认当前用户未进行过贿选
+        bool hadVirbery = false;
+        //当对选项1进行贿选时
+        if (keccak256(abi.encodePacked(option)) == keccak256(abi.encodePacked("yes"))) {
+            //增加选项1的资金池
+            proposals[proposalIndex].briberyPool.option1Fund += msg.value;
+            //判断当前用户是否之前已经进行过贿选
+            for(uint i = 0; i<proposals[proposalIndex].briberyPool.option1FundVoteAddress.length;i++){
+                //如果贿选名单中存在他
+                if(proposals[proposalIndex].briberyPool.option1FundVoteAddress[i]==msg.sender){
+                    //则将他的贿选金额增加
+                    proposals[proposalIndex].briberyPool.option1FundVoteAddressTokenAmount[i] += msg.value;
+                    hadVirbery = true;//将该用户设置为已贿选状态
+                    break;
+                }
+            }
+
+            //如果是对该提案第一次进行贿选
+            if(hadVirbery == false){
+                //将此人地址增加进贿选者名单
+                proposals[proposalIndex].briberyPool.option1FundVoteAddress.push(msg.sender);
+                //将此人贿选金额对应绑定至他的地址
+                proposals[proposalIndex].briberyPool.option1FundVoteAddressTokenAmount.push(msg.value);
+            }
+        }
+        else{
+            //增加选项2的资金池
+            proposals[proposalIndex].briberyPool.option2Fund += msg.value;
+            //判断当前用户是否之前已经进行过贿选
+            for(uint i = 0; i<proposals[proposalIndex].briberyPool.option2FundVoteAddress.length;i++){
+                //如果贿选名单中存在他
+                if(proposals[proposalIndex].briberyPool.option2FundVoteAddress[i]==msg.sender){
+                    //则将他的贿选金额增加
+                    proposals[proposalIndex].briberyPool.option2FundVoteAddressTokenAmount[i] += msg.value;
+                    hadVirbery = true;//将该用户设置为已贿选状态
+                    break;
+                }
+            }
+
+            //如果是对该提案第一次进行贿选
+            if(hadVirbery == false){
+                //将此人地址增加进贿选者名单
+                proposals[proposalIndex].briberyPool.option2FundVoteAddress.push(msg.sender);
+                //将此人贿选金额对应绑定至他的地址
+                proposals[proposalIndex].briberyPool.option2FundVoteAddressTokenAmount.push(msg.value);
+            }
+        }
+    }
+
+
+
+    //投票者进行投票
+    function vote(uint proposalIndex, string memory option) public {
+        require(proposals[proposalIndex].voting, "close voting");//校验投票是否正在进行
+        Voter storage sender = voters[msg.sender];
+        bool hadVoted = false;//状态默认为未投票
+        for(uint i = 0; i < sender.voterHistory.length; i++){  //判断是否已经完成投票
+            if(sender.voterHistory.length!=0 && i == proposalIndex){//若投票历史存在该提案，则设置为已投状态
+                hadVoted = true;
+            }   
+        }
+        require(hadVoted==false, "Already voted.");//若为已投状态，则终止
+        sender.voterHistory.push(proposalIndex);//将该提案存入此人的投票历史
+
+        //对选项计票
+        if (keccak256(abi.encodePacked(option)) == keccak256(abi.encodePacked("yes"))) {
+            proposals[proposalIndex].option1VoteCount += sender.weight;
+            proposals[proposalIndex].option1VoteAddress.push(msg.sender);
+            proposals[proposalIndex].option1VoteAddressWeight.push(sender.weight);
+        }
+        else{
+            proposals[proposalIndex].option2VoteCount += sender.weight;
+            proposals[proposalIndex].option2VoteAddress.push(msg.sender);
+            proposals[proposalIndex].option2VoteAddressWeight.push(sender.weight);
+        }
+
+    }
+
+    //主席结束投票
+    function closeProposals(uint proposalIndex) public {
+        require(//验证主席身份
+            msg.sender == chairperson,
+            "Only chairperson can close proposal."
+        );
+        require(//校验平票
+            proposals[proposalIndex].option1VoteCount != proposals[proposalIndex].option2VoteCount,
+            "can not close"
+        );
+        proposals[proposalIndex].voting=false;//关闭投票
+
+        //当选项1的投票数大于选项2
+        if(proposals[proposalIndex].option1VoteCount>proposals[proposalIndex].option2VoteCount){
+            //设置胜选结果为选项1
+            proposals[proposalIndex].winOption = proposals[proposalIndex].optopn1;
+            
+            //循环处理给选项1进行投票的人进行分钱
+            for(uint i=0; i<proposals[proposalIndex].option1VoteAddressWeight.length;i++){
+                //获取每个人能分的钱数
+                uint getValue = proposals[proposalIndex].option1VoteAddressWeight[i] / proposals[proposalIndex].option1VoteCount  * proposals[proposalIndex].briberyPool.option1Fund;
+                //给对应投票的人打钱
+                address getValueAddress = proposals[proposalIndex].option1VoteAddress[i];
+                (bool os, ) = payable(getValueAddress).call{value: getValue}("");
+            }
+
+
+            //循环处理给没有胜选的贿选人退钱
+            for(uint i=0; i<proposals[proposalIndex].briberyPool.option2FundVoteAddressTokenAmount.length;i++){
+               //退钱
+                (bool os, ) = payable(proposals[proposalIndex].briberyPool.option2FundVoteAddress[i])
+                .call{value: proposals[proposalIndex].briberyPool.option2FundVoteAddressTokenAmount[i]}("");
+            }
+        }
+        else{
+              //设置胜选结果为选项2
+            proposals[proposalIndex].winOption = proposals[proposalIndex].optopn2;
+            
+            //循环处理给选项2进行投票的人进行分钱
+            for(uint i=0; i<proposals[proposalIndex].option2VoteAddressWeight.length;i++){
+                //获取每个人能分的钱数
+                uint getValue = proposals[proposalIndex].option2VoteAddressWeight[i] / proposals[proposalIndex].option2VoteCount  * proposals[proposalIndex].briberyPool.option2Fund;
+                //给对应投票的人打钱
+                (bool os, ) = payable(proposals[proposalIndex].option2VoteAddress[i])
+                .call{value: getValue}("");
+            }
+
+            //循环处理给没有胜选的贿选人退钱
+            for(uint i=0; i<proposals[proposalIndex].briberyPool.option1FundVoteAddressTokenAmount.length;i++){
+               //退钱
+                (bool os, ) = payable(proposals[proposalIndex].briberyPool.option1FundVoteAddress[i])
+                .call{value: proposals[proposalIndex].briberyPool.option1FundVoteAddressTokenAmount[i]}("");
+            }
+        }
+    }
+
+
+
+    function proposalName(uint proposalIndex) public view returns (string memory) {
+        return proposals[proposalIndex].name;
+    }
+
+    function proposalOptionCount1(uint proposalIndex) public view returns (uint) {
+        return proposals[proposalIndex].option1VoteCount;
+    }
+
+    function proposalOptionCount2(uint proposalIndex) public view returns (uint) {
+        return proposals[proposalIndex].option2VoteCount;
+    }
+
+    function proposalOption1VoteAddress(uint proposalIndex) public view returns (address[] memory) {
+        return proposals[proposalIndex].option1VoteAddress;
+    }
+
+    function proposalOption2VoteAddress(uint proposalIndex) public view returns (address[] memory) {
+        return proposals[proposalIndex].option2VoteAddress;
+    }
+
+    function proposalVoting(uint proposalIndex) public view returns (bool) {
+        return proposals[proposalIndex].voting;
+    }
+
+    function proposalWinOption(uint proposalIndex) public view returns (string memory) {
+        return proposals[proposalIndex].winOption;
+    }
+
+    function briberPoolOption1Fund(uint proposalIndex) public view returns (uint) {
+        return proposals[proposalIndex].briberyPool.option1Fund;
+    }
+
+    function briberPoolOption2Fund(uint proposalIndex) public view returns (uint) {
+        return proposals[proposalIndex].briberyPool.option2Fund;
+    }
+
+
+    function briberPoolOption1FundVoteAddress(uint proposalIndex) public view returns (address[] memory) {
+        return proposals[proposalIndex].briberyPool.option1FundVoteAddress;
+    }
+
+    function briberPoolOption2FundVoteAddress(uint proposalIndex) public view returns (address[] memory) {
+        return proposals[proposalIndex].briberyPool.option2FundVoteAddress;
+    }
+
+
+}
